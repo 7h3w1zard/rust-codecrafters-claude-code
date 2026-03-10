@@ -1,7 +1,13 @@
 use async_openai::{Client, config::OpenAIConfig};
 use clap::Parser;
 use serde_json::{Value, json};
-use std::{env, process};
+use std::{
+    env,
+    fs::File,
+    io::Read,
+    path::Path,
+    process::{self, ExitCode},
+};
 
 #[derive(Parser)]
 #[command(author, version, about)]
@@ -11,7 +17,7 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     let base_url = env::var("OPENROUTER_BASE_URL")
@@ -59,13 +65,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }))
         .await?;
 
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
-    eprintln!("Logs from your program will appear here!");
+    if let Some(tool_calls) =
+        response["choices"][0]["message"]["tool_calls"][0]["function"].as_object()
+    {
+        match tool_calls.get("name").unwrap_or_default().as_str() {
+            Some("Read") => {
+                let file_name = tool_calls
+                    .get("arguments")
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .strip_prefix("{\"file_path\": \"")
+                    .unwrap()
+                    .strip_suffix("\"}");
+                {
+                    Read_tool::print_file(&Path::new(&file_name.unwrap()))?;
+                }
+            }
+            Some(&_) => todo!(),
+            None => todo!(),
+        }
+    }
 
-    // TODO: Uncomment the lines below to pass the first stage
     if let Some(content) = response["choices"][0]["message"]["content"].as_str() {
         println!("{}", content);
     }
 
-    Ok(())
+    Ok(ExitCode::from(0))
+}
+
+struct Read_tool;
+
+impl Read_tool {
+    fn print_file(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let mut f = File::open(path)?;
+        let mut buffer = String::new();
+
+        f.read_to_string(&mut buffer)?;
+
+        println!("{}", buffer);
+
+        Ok(())
+    }
 }
