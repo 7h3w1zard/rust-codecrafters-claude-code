@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use std::{
     env,
     fs::File,
-    io::Read,
+    io::{Read, Write},
     path::Path,
     process::{self, ExitCode},
 };
@@ -43,23 +43,43 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             .create_byot(json!({
                 "messages": messages,
                 "tools": [{
-                    "type": "function",
-                    "function": {
-                        "name": "Read",
-                        "description": "Read and return the contents of a file",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "file_path": {
-                                    "type": "string",
-                                    "description": "The path to the file to read"
-                                }
+                "type": "function",
+                "function": {
+                "name": "Read",
+                "description": "Read and return the contents of a file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "The path to the file to read"
+                        }
+                    },
+                    "required": ["file_path"]
+                    }
+                }
+            }, {
+                "type": "function",
+                "function": {
+                    "name": "Write",
+                    "description": "Write content to a file",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["file_path", "content"],
+                        "properties": {
+                            "file_path": {
+                            "type": "string",
+                            "description": "The path of the file to write to"
                             },
-                            "required": ["file_path"]
+                            "content": {
+                            "type": "string",
+                            "description": "The content to write to the file"
+                            }
                         }
                     }
-                }],
-                "model": "anthropic/claude-haiku-4.5",
+                }
+            }],
+            "model": "anthropic/claude-haiku-4.5",
             }))
             .await?;
 
@@ -71,16 +91,33 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             for tool in tool_calls.iter() {
                 match tool["function"].get("name").unwrap_or_default().as_str() {
                     Some("Read") => {
-                        let file_name = tool["function"]
-                            .get("arguments")
-                            .unwrap()
-                            .as_str()
-                            .unwrap()
-                            .strip_prefix("{\"file_path\": \"")
-                            .unwrap()
-                            .strip_suffix("\"}");
+                        let args: Value = serde_json::from_str(
+                            tool["function"].get("arguments").unwrap().as_str().unwrap(),
+                        )?;
+                        let file_path = args["file_path"].as_str().unwrap();
                         {
-                            let tool_res = ReadTool::read_file(Path::new(&file_name.unwrap()))?;
+                            let tool_res = Tools::read_file(Path::new(&file_path))?;
+                            messages.push(json!(
+                                    {"role": "tool",
+                                    "tool_call_id": tool
+                                        .get("id")
+                                        .unwrap()
+                                        .as_str()
+                                        .unwrap(),
+                                    "content": tool_res
+                                }
+                            ));
+                        }
+                    }
+                    Some("Write") => {
+                        let args: Value = serde_json::from_str(
+                            tool["function"].get("arguments").unwrap().as_str().unwrap(),
+                        )?;
+                        let file_path = args["file_path"].as_str().unwrap();
+                        let content = args["content"].as_str().unwrap();
+                        {
+                            let tool_res =
+                                Tools::write_file(Path::new(&file_path), content)?;
                             messages.push(json!(
                                     {"role": "tool",
                                     "tool_call_id": tool
@@ -108,9 +145,9 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
     Ok(ExitCode::from(0))
 }
 
-struct ReadTool;
+struct Tools;
 
-impl ReadTool {
+impl Tools {
     fn read_file(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
         let mut f = File::open(path)?;
         let mut buffer = String::new();
@@ -118,5 +155,17 @@ impl ReadTool {
         f.read_to_string(&mut buffer)?;
 
         Ok(buffer)
+    }
+
+    fn write_file(path: &Path, content: &str) -> Result<String, Box<dyn std::error::Error>> {
+        if path.exists() {
+            let mut f = File::options().write(true).truncate(true).open(path)?;
+            f.write_all(content.as_bytes())?;
+        } else {
+            let mut f = File::create_new(path)?;
+            f.write_all(content.as_bytes())?;
+        }
+
+        Ok(String::from("Created the file"))
     }
 }
