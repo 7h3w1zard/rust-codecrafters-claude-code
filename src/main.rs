@@ -34,77 +34,89 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
 
     let client = Client::with_config(config);
 
-    #[allow(unused_variables)]
-    let response: Value = client
-        .chat()
-        .create_byot(json!({
-            "messages": [
-                {
-                    "role": "user",
-                    "content": args.prompt
-                }
-            ],
-            "tools": [{
-                "type": "function",
-                "function": {
-                    "name": "Read",
-                    "description": "Read and return the contents of a file",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "file_path": {
-                                "type": "string",
-                                "description": "The path to the file to read"
-                            }
-                        },
-                        "required": ["file_path"]
-                    }
-                }
-            }],
-            "model": "anthropic/claude-haiku-4.5",
-        }))
-        .await?;
+    let mut messages = vec![json!({"role": "user", "content": args.prompt})];
 
-    if let Some(tool_calls) =
-        response["choices"][0]["message"]["tool_calls"][0]["function"].as_object()
-    {
-        match tool_calls.get("name").unwrap_or_default().as_str() {
-            Some("Read") => {
-                let file_name = tool_calls
-                    .get("arguments")
-                    .unwrap()
-                    .as_str()
-                    .unwrap()
-                    .strip_prefix("{\"file_path\": \"")
-                    .unwrap()
-                    .strip_suffix("\"}");
-                {
-                    Read_tool::print_file(&Path::new(&file_name.unwrap()))?;
+    #[allow(unused_variables)]
+    'agent: loop {
+        let response: Value = client
+            .chat()
+            .create_byot(json!({
+                "messages": messages,
+                "tools": [{
+                    "type": "function",
+                    "function": {
+                        "name": "Read",
+                        "description": "Read and return the contents of a file",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "file_path": {
+                                    "type": "string",
+                                    "description": "The path to the file to read"
+                                }
+                            },
+                            "required": ["file_path"]
+                        }
+                    }
+                }],
+                "model": "anthropic/claude-haiku-4.5",
+            }))
+            .await?;
+
+        messages.push(serde_json::to_value(
+            response["choices"][0]["message"].clone(),
+        )?);
+
+        if let Some(tool_calls) = response["choices"][0]["message"]["tool_calls"].as_array() {
+            for tool in tool_calls.iter() {
+                match tool["function"].get("name").unwrap_or_default().as_str() {
+                    Some("Read") => {
+                        let file_name = tool["function"]
+                            .get("arguments")
+                            .unwrap()
+                            .as_str()
+                            .unwrap()
+                            .strip_prefix("{\"file_path\": \"")
+                            .unwrap()
+                            .strip_suffix("\"}");
+                        {
+                            let tool_res = ReadTool::read_file(Path::new(&file_name.unwrap()))?;
+                            messages.push(json!(
+                                    {"role": "tool",
+                                    "tool_call_id": tool
+                                        .get("id")
+                                        .unwrap()
+                                        .as_str()
+                                        .unwrap(),
+                                    "content": tool_res
+                                }
+                            ));
+                        }
+                    }
+                    Some(&_) => todo!(),
+                    None => todo!(),
                 }
             }
-            Some(&_) => todo!(),
-            None => todo!(),
+        } else {
+            if let Some(content) = response["choices"][0]["message"]["content"].as_str() {
+                println!("{}", content);
+                break 'agent;
+            }
         }
-    }
-
-    if let Some(content) = response["choices"][0]["message"]["content"].as_str() {
-        println!("{}", content);
     }
 
     Ok(ExitCode::from(0))
 }
 
-struct Read_tool;
+struct ReadTool;
 
-impl Read_tool {
-    fn print_file(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+impl ReadTool {
+    fn read_file(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
         let mut f = File::open(path)?;
         let mut buffer = String::new();
 
         f.read_to_string(&mut buffer)?;
 
-        println!("{}", buffer);
-
-        Ok(())
+        Ok(buffer)
     }
 }
