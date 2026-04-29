@@ -78,6 +78,22 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                         }
                     }
                 }
+            }, {
+                "type": "function",
+                "function": {
+                    "name": "Bash",
+                    "description": "Execute a shell command",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["command"],
+                        "properties": {
+                            "command": {
+                            "type": "string",
+                            "description": "The command to execute"
+                            }
+                        }
+                    }
+                }
             }],
             "model": "anthropic/claude-haiku-4.5",
             }))
@@ -116,8 +132,28 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                         let file_path = args["file_path"].as_str().unwrap();
                         let content = args["content"].as_str().unwrap();
                         {
-                            let tool_res =
-                                Tools::write_file(Path::new(&file_path), content)?;
+                            let tool_res = Tools::write_file(Path::new(&file_path), content)?;
+                            messages.push(json!(
+                                    {"role": "tool",
+                                    "tool_call_id": tool
+                                        .get("id")
+                                        .unwrap()
+                                        .as_str()
+                                        .unwrap(),
+                                    "content": tool_res
+                                }
+                            ));
+                        }
+                    }
+                    Some("Bash") => {
+                        let args: Value = serde_json::from_str(
+                            tool["function"].get("arguments").unwrap().as_str().unwrap(),
+                        )?;
+                        let command = args["command"].as_str().unwrap();
+                        eprintln!("command: {}", command);
+                        {
+                            let tool_res = Tools::bash(command);
+                            eprintln!("tool_res: {}", tool_res);
                             messages.push(json!(
                                     {"role": "tool",
                                     "tool_call_id": tool
@@ -167,5 +203,25 @@ impl Tools {
         }
 
         Ok(String::from("Created the file"))
+    }
+
+    fn bash(command: &str) -> String {
+        let (shell, flag) = if cfg!(target_os = "windows") {
+            ("powershell", "-Command")
+        } else {
+            ("bash", "-c")
+        };
+
+        let output = std::process::Command::new(shell)
+            .arg(flag)
+            .arg(command)
+            .output();
+
+        if output.is_ok() {
+            let output = output.unwrap();
+            String::from_utf8_lossy(&output.stdout).to_string()
+        } else {
+            output.unwrap_err().to_string()
+        }
     }
 }
